@@ -1,18 +1,36 @@
 /**
  * brightnessMonitor
- * install "serialport"
+ * 
+ * install node objects.
+ * $ npm install socket.io
  * $ npm install serialport
- * start node server.
+ * starting node server.
  * $ node server.js
  */
 (function(){
 
 	// ----------------------------------
-	// HTTPサーバーの準備
+	// モジュールのロード
 	var http = require('http');
 	var url = require('url');
 	var fs = require('fs');
-	var webserverPortNum = 80;
+	var serialport = require('serialport');
+	// var child_process = require('child_process');
+
+	// ----------------------------------
+	// 設定
+	var conf = {};
+	conf.webserverPortNum = 8080;//ウェブサーバーのポート番号
+	conf.portName = null; // シリアルポート名
+
+	// ----------------------------------
+	// 接続
+	var conSockets = {};//←WebSocket接続
+	var conSerialPort = null;//←シリアルポート接続
+
+
+	// ----------------------------------
+	// HTTPサーバーの準備
 
 	// ドキュメントルートのファイルパス
 	var documentRoot = './htdocs/';
@@ -66,6 +84,7 @@
 		});
 
 	});
+	var io = require('socket.io').listen(server);
 
 	// HTTPサーバーの準備
 	// ----------------------------------
@@ -73,51 +92,82 @@
 
 	// ----------------------------------
 	// シリアル通信の準備
-	var serialport = require('serialport');
 
-	// Serial Port
-	var portName = '/dev/tty.usbmodem1421'; // Mac環境
-	var sp = new serialport.SerialPort(portName, {
-	    baudRate: 9600,
-	    dataBits: 8,
-	    parity: 'none',
-	    stopBits: 0,
-	    flowControl: false,
-	    parser: serialport.parsers.readline("\n")   // ※修正：パースの単位を改行で行う
-	});
+	// USBデバイスの検索 (MacOSX環境を想定)
+	function search_serial_port(){
+		fs.readdir('/dev/', function (err, files){
+			if( !conf.portName ){
+				// 予め設定されていたら、特に検索はしない
+				var usbDevices = [];
+				for( var i in files ){
+					if( files[i].match( /^tty\.usb.+$/ ) ){
+						usbDevices.push(files[i]);
+					}
+				}
+				if( usbDevices.length == 0 ){
+					conf.portName = null;
+				}else if( usbDevices.length == 1 ){
+					conf.portName = '/dev/'+usbDevices[0];
+				}
+			}
+
+			if( conf.portName ){
+				conSerialPort = new serialport.SerialPort(conf.portName, {
+					baudRate: 9600,
+					dataBits: 8,
+					parity: 'none',
+					stopBits: 0,
+					flowControl: false,
+					parser: serialport.parsers.readline("\n")   // ※修正：パースの単位を改行で行う
+				});
+
+				// data from Serial port
+				conSerialPort.on('data', function(input) {
+					// シリアルポートから値を受け取る
+					var buffer = new Buffer(input);
+					var deviceMsg = buffer.toString('utf8');
+
+					// 受け取った値をブラウザに送る
+					for( var i in conSockets ){
+						console.log('send value to: '+ conSockets[i].id);
+						if(conSockets[i]){
+							conSockets[i].emit('report', deviceMsg);
+						}
+					}
+				});
+				console.log('USB device detect: '+conf.portName);
+				console.log('device(s) standby.');
+			}else{
+				//シリアルポートが見つからなかったら、リトライ
+				search_serial_port();
+			}
+		});
+	}
+	search_serial_port();//シリアルポートの検索
+
 	// シリアル通信の準備
 	// ----------------------------------
 
-	var io = require('socket.io').listen(server);
-	var socket;
 	io.sockets.on('connection', function (tmpSocket) {
 		// if( socket ){
 		// 	console.log('connection canceled.');
 		// 	return;
 		// }
-		socket = tmpSocket;
+		tmpSocket.on('disconnect', function(){
+			console.log('disconnected. ('+this.id+')');
+			delete conSockets[this.id];
+		});
+		conSockets[tmpSocket.id] = tmpSocket;
 		console.log('Socket Connected.');
+		// console.log(conSockets);
 	});
 
-	// data from Serial port
-	sp.on('data', function(input) {
-		// シリアルポートから値を受け取る
-		var buffer = new Buffer(input);
-		var deviceMsg = buffer.toString('utf8');
-
-		// 受け取った値をブラウザに送る
-		if(socket){
-			socket.emit('report', deviceMsg);
-		}
-	});
-	console.log(portName);
-	console.log('device(s) standby.');
 
 
 
 	// ポート番号を指定して、LISTEN状態にする
-	server.listen(webserverPortNum);
-	console.log('HTTP Server, standby on port '+(webserverPortNum)+'.');
+	server.listen(conf.webserverPortNum);
+	console.log('HTTP Server, standby on port '+(conf.webserverPortNum)+'.');
 
 
 
